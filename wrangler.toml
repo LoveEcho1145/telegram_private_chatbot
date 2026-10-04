@@ -1,0 +1,15 @@
+name = "telegram-private-chatbot"
+main = "worker.js"
+compatibility_date = "2024-11-30"
+
+[[kv_namespaces]]
+binding = "TOPIC_MAP"
+id = "b191676605f3a442b91a2096c09d11fb1"
+
+[vars]
+SUPERGROUP_ID = "-1003893101194"
+TURNSTILE_SITE_KEY = "0x4AAAAAAAFNLpM3MQcv_nRH1"
+
+# 注意：以下敏感变量不应写入本文件，请在 Cloudflare 后台配置：
+#   BOT_TOKEN             - Telegram 机器人 Token
+#   TURNSTILE_SECRET_KEY  - Cloudflare Turnstile 站点 Secret Key（人机验证）
