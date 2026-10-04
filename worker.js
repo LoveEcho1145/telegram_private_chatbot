@@ -17,9 +17,10 @@ const CONFIG = {
     MAX_TITLE_LENGTH: 128,
     MAX_NAME_LENGTH: 30,
     API_TIMEOUT_MS: 10000,
-    CLEANUP_BATCH_SIZE: 10,
     MAX_CLEANUP_DISPLAY: 20,
-    CLEANUP_LOCK_TTL_SECONDS: 1800,     // /cleanup 防并发锁 30 分钟
+    CLEANUP_LOCK_TTL_SECONDS: 600,      // /cleanup 防并发锁 10 分钟
+    CLEANUP_TIME_BUDGET_MS: 20000,      // /cleanup 单次运行时间预算（超出则断点续扫）
+    CLEANUP_PROBE_DELAY_MS: 1100,       // /cleanup 探测节流间隔（避免 Telegram 群消息限流 429）
     MAX_RETRY_ATTEMPTS: 3,
     THREAD_HEALTH_TTL_MS: 60000
 };
@@ -205,7 +206,7 @@ async function probeForumThread(env, expectedThreadId, { userId, reason, doubleC
             if (isTestMessageInvalid(res.description)) {
                 return { status: "probe_invalid", description: res.description };
             }
-            return { status: "unknown_error", description: res.description };
+            return { status: "unknown_error", description: res.description, retryAfter: res.parameters?.retry_after };
         }
 
         // 关键：有些情况下 Telegram 会返回 ok 但不带 message_thread_id（常见于 General）
@@ -679,6 +680,56 @@ async function forwardToTopic(msg, userId, key, env, ctx, origin) {
     }
 }
 
+// 管理员命令表（/help）
+async function sendAdminHelp(threadId, env) {
+    const text =
+`🛠️ 管理员指令
+
+/close 强制关闭对话
+机器人会提示用户对话已结束，并拒收新消息。
+工单处理完成，礼貌结束咨询。
+
+/open 重新开启对话
+恢复对该用户的消息转发。
+误操作关闭，或用户需再次联系。
+
+/ban 封禁用户
+机器人将完全无视该用户的所有消息（无提示）。
+遇到恶意刷屏、广告机器人。
+
+/unban 解封用户
+恢复该用户的正常通讯权限。
+给予改过自新的机会。
+
+/deluser 删除用户数据
+清除该用户的数据与话题聊天记录，保留封禁状态（需先 /ban）。
+彻底清理被封禁用户的痕迹。
+
+/trust 永久信任
+该用户将永久免除人机验证（永不过期）。
+熟人、VIP 客户、长期合作伙伴。
+
+/reset 重置验证
+强制清除该用户的验证状态，下次需重新验证。
+测试验证流程，或怀疑账号被盗。
+
+/info 查看信息
+显示当前用户的 UID、话题 ID 和链接。
+查询用户资料。
+
+/cleanup 批量清理
+扫描并清理已删除话题的用户数据。用户较多时会分批处理，
+按提示再次发送 /cleanup 即可继续。
+
+/help 命令表
+显示本指令列表。`;
+
+    await tgCall(env, "sendMessage", withMessageThreadId({
+        chat_id: env.SUPERGROUP_ID,
+        text
+    }, threadId));
+}
+
 async function handleAdminReply(msg, env, ctx) {
   const threadId = msg.message_thread_id;
   const text = (msg.text || "").trim();
@@ -693,6 +744,12 @@ async function handleAdminReply(msg, env, ctx) {
   if (text === "/cleanup") {
       // /cleanup 可能处理较久，使用 waitUntil 防止 webhook 请求超时导致“卡住”
       ctx.waitUntil(handleCleanupCommand(threadId, env));
+      return;
+  }
+
+  // 命令表：任何话题（含 General）可用
+  if (text === "/help" || text === "/start") {
+      await sendAdminHelp(threadId, env);
       return;
   }
 
@@ -820,7 +877,7 @@ async function handleAdminReply(msg, env, ctx) {
 
 // ---------------- 验证模块 (Cloudflare Turnstile 网页验证) ----------------
 
-// 验证页共用样式（自适应明暗主题）
+// 验证页共用样式（自适应明暗主题 + Telegram WebApp 主题）
 const VERIFY_PAGE_CSS = `
 *{margin:0;box-sizing:border-box}
 body{min-height:100vh;display:flex;align-items:center;justify-content:center;font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;background:#f2f4f8;color:#1c1e21;padding:16px}
@@ -828,8 +885,15 @@ body{min-height:100vh;display:flex;align-items:center;justify-content:center;fon
 h1{font-size:20px;margin-bottom:12px}
 p{font-size:14px;color:#5f6368;line-height:1.6;margin-bottom:20px}
 .cf-turnstile{display:flex;justify-content:center}
+.btn{display:inline-block;padding:10px 24px;border:none;border-radius:10px;background:#3390ec;color:#fff;font-size:15px;cursor:pointer}
 @media (prefers-color-scheme:dark){body{background:#131314;color:#e3e3e3}.card{background:#1e1f20;box-shadow:0 8px 30px rgba(0,0,0,.4)}p{color:#9aa0a6}}
+html.tg-dark body{background:#131314;color:#e3e3e3}
+html.tg-dark .card{background:#1e1f20;box-shadow:0 8px 30px rgba(0,0,0,.4)}
+html.tg-dark p{color:#9aa0a6}
 `;
+
+// Telegram Mini App 初始化（内嵌打开时适配主题并展开）
+const VERIFY_TG_INIT = `(function(){var w=window.Telegram&&window.Telegram.WebApp;if(w){w.ready();w.expand();if(w.colorScheme==='dark'){document.documentElement.classList.add('tg-dark');}}})();`;
 
 async function sendVerificationChallenge(userId, env, pendingMsgId, origin, fromUser) {
     // 检查是否已有进行中的验证
@@ -886,9 +950,9 @@ async function sendVerificationChallenge(userId, env, pendingMsgId, origin, from
 
     await tgCall(env, "sendMessage", {
         chat_id: userId,
-        text: "🛡️ **人机验证**\n\n请点击下方按钮，在打开的网页中完成 Cloudflare 安全验证 (验证通过后将自动发送您刚才的消息)。",
+        text: "🛡️ **人机验证**\n\n请点击下方按钮，在弹出的窗口内完成 Cloudflare 安全验证 (验证通过后将自动发送您刚才的消息)。",
         parse_mode: "Markdown",
-        reply_markup: { inline_keyboard: [[{ text: "🛡️ 点击完成验证", url: `${origin}/verify?uid=${userId}&token=${verifyId}` }]] }
+        reply_markup: { inline_keyboard: [[{ text: "🛡️ 点击完成验证", web_app: { url: `${origin}/verify?uid=${userId}&token=${verifyId}` } }]] }
     });
 }
 
@@ -914,6 +978,7 @@ function renderVerifyPage(siteKey, uid, token) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>人机验证</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
 <style>${VERIFY_PAGE_CSS}</style>
 </head>
@@ -927,7 +992,7 @@ function renderVerifyPage(siteKey, uid, token) {
     <div class="cf-turnstile" data-sitekey="${siteKey}" data-callback="onVerify"></div>
   </form>
 </main>
-<script>
+<script>${VERIFY_TG_INIT}
 function onVerify() {
     document.getElementById('tip').textContent = '✅ 验证成功，正在提交…';
     document.getElementById('vf').submit();
@@ -944,13 +1009,16 @@ function renderVerifyResult(ok, message) {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${ok ? "验证成功" : "验证失败"}</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 <style>${VERIFY_PAGE_CSS}</style>
 </head>
 <body>
 <main class="card">
   <h1>${ok ? "✅ 验证成功" : "❌ 验证失败"}</h1>
   <p>${message}</p>
+  ${ok ? `<button class="btn" onclick="var w=window.Telegram&&window.Telegram.WebApp;if(w){w.close();}">返回 Telegram</button>` : ""}
 </main>
+<script>${VERIFY_TG_INIT}</script>
 </body>
 </html>`;
 }
@@ -1085,6 +1153,8 @@ async function completeVerification(userId, verifyId, state, env, ctx, origin) {
  */
 async function handleCleanupCommand(threadId, env) {
     const lockKey = "cleanup:lock";
+    const stateKey = "cleanup:state";
+
     const locked = await env.TOPIC_MAP.get(lockKey);
     if (locked) {
         await tgCall(env, "sendMessage", withMessageThreadId({
@@ -1097,119 +1167,108 @@ async function handleCleanupCommand(threadId, env) {
 
     await env.TOPIC_MAP.put(lockKey, "1", { expirationTtl: CONFIG.CLEANUP_LOCK_TTL_SECONDS });
 
-    // 发送处理中的消息
+    // 断点续扫状态：用户较多时单次运行扫不完，自动分多轮处理
+    let state = await safeGetJSON(env, stateKey, null);
+    const resumed = !!state;
+    if (!state) {
+        state = { cursor: null, index: 0, scanned: 0, cleaned: 0, errors: 0, users: [] };
+    }
+
     await tgCall(env, "sendMessage", withMessageThreadId({
         chat_id: env.SUPERGROUP_ID,
-        text: "🔄 **正在扫描需要清理的用户...**",
+        text: resumed
+            ? `🔄 **继续扫描...** (此前已扫描 ${state.scanned} 个用户，清理 ${state.cleaned} 个)`
+            : "🔄 **正在扫描需要清理的用户...**",
         parse_mode: "Markdown"
     }, threadId));
 
-    let cleanedCount = 0;
-    let errorCount = 0;
-    const cleanedUsers = [];
-    let scannedCount = 0;
+    const startedAt = Date.now();
+    let exhausted = false;
 
     try {
-        // 逐页扫描，避免一次性拉取全部 keys 导致超时/内存膨胀
-        let cursor = undefined;
         do {
-            const result = await env.TOPIC_MAP.list({ prefix: "user:", cursor });
+            const pageCursor = state.cursor;
+            const result = await env.TOPIC_MAP.list({ prefix: "user:", cursor: pageCursor || undefined, limit: 200 });
             const names = (result.keys || []).map(k => k.name);
-            scannedCount += names.length;
 
-            // 批量并发处理（限制并发数）
-            for (let i = 0; i < names.length; i += CONFIG.CLEANUP_BATCH_SIZE) {
-                const batch = names.slice(i, i + CONFIG.CLEANUP_BATCH_SIZE);
+            for (let i = state.index; i < names.length; i++) {
+                // 时间预算：超出则保存断点，下轮从此处继续
+                if (Date.now() - startedAt > CONFIG.CLEANUP_TIME_BUDGET_MS) {
+                    exhausted = true;
+                    state.cursor = pageCursor;
+                    state.index = i;
+                    break;
+                }
 
-                const results = await Promise.allSettled(
-                    batch.map(async (name) => {
-                        const rec = await safeGetJSON(env, name, null);
-                    if (!rec || !rec.thread_id) return null;
+                const name = names[i];
+                const rec = await safeGetJSON(env, name, null);
+                state.scanned++;
+                if (!rec || !rec.thread_id) continue;
 
-                    const userId = name.slice(5);
-                    const topicThreadId = rec.thread_id;
+                const userId = name.slice(5);
+                const topicThreadId = rec.thread_id;
 
-                    // 检测话题是否存在：尝试向话题发送测试消息
-                    const probe = await probeForumThread(env, topicThreadId, {
-                        userId,
-                        reason: "cleanup_check",
-                        doubleCheckOnMissingThreadId: false
-                    });
+                // 检测话题是否存在（带 429 限流重试）
+                const probe = await probeWithRetry(env, topicThreadId, userId);
 
-                    // cleanup 要求更保守：仅在明确缺失/重定向时清理，避免误删有效记录
-                    if (probe.status === "redirected" || probe.status === "missing") {
-                            await env.TOPIC_MAP.delete(name);
-                            await env.TOPIC_MAP.delete(`verified:${userId}`);
-                            await env.TOPIC_MAP.delete(`thread:${topicThreadId}`);
-
-                            return {
-                                userId,
-                                threadId: topicThreadId,
-                                title: rec.title || "未知"
-                            };
-                    } else if (probe.status === "probe_invalid") {
-                        Logger.warn('cleanup_probe_invalid_message', {
-                            userId,
-                            threadId: topicThreadId,
-                            errorDescription: probe.description
-                        });
-                    } else if (probe.status === "unknown_error") {
-                        Logger.warn('cleanup_probe_failed_unknown', {
-                            userId,
-                            threadId: topicThreadId,
-                            errorDescription: probe.description
-                        });
-                    } else if (probe.status === "missing_thread_id") {
-                        Logger.warn('cleanup_probe_missing_thread_id', { userId, threadId: topicThreadId });
+                // cleanup 要求更保守：仅在明确缺失/重定向时清理，避免误删有效记录
+                if (probe.status === "redirected" || probe.status === "missing") {
+                    await env.TOPIC_MAP.delete(name);
+                    await env.TOPIC_MAP.delete(`verified:${userId}`);
+                    await env.TOPIC_MAP.delete(`thread:${topicThreadId}`);
+                    state.cleaned++;
+                    if (state.users.length < CONFIG.MAX_CLEANUP_DISPLAY) {
+                        state.users.push({ userId, title: rec.title || "未知" });
                     }
-
-                    return null;
-                })
-            );
-
-            // 处理结果
-            results.forEach(result => {
-                if (result.status === 'fulfilled' && result.value) {
-                    cleanedCount++;
-                    cleanedUsers.push(result.value);
-                    Logger.info('cleanup_user', {
-                        userId: result.value.userId,
-                        threadId: result.value.threadId
+                    Logger.info('cleanup_user', { userId, threadId: topicThreadId });
+                } else if (probe.status !== "ok") {
+                    state.errors++;
+                    Logger.warn('cleanup_probe_failed', {
+                        userId,
+                        threadId: topicThreadId,
+                        status: probe.status,
+                        errorDescription: probe.description
                     });
-                } else if (result.status === 'rejected') {
-                    errorCount++;
-                    Logger.error('cleanup_batch_error', result.reason);
                 }
-            });
 
-                // 防止速率限制
-                if (i + CONFIG.CLEANUP_BATCH_SIZE < names.length) {
-                    await new Promise(r => setTimeout(r, 600));
-                }
+                // 探测节流：避免触发 Telegram 群消息限流
+                await new Promise(r => setTimeout(r, CONFIG.CLEANUP_PROBE_DELAY_MS));
             }
 
-            cursor = result.list_complete ? undefined : result.cursor;
+            if (exhausted) break;
+            state.index = 0;
+            state.cursor = result.list_complete ? null : result.cursor;
+        } while (state.cursor);
 
-            // 在分页之间让出时间片，降低单次执行压力
-            if (cursor) {
-                await new Promise(r => setTimeout(r, 200));
-            }
-        } while (cursor);
+        if (exhausted) {
+            // 保存断点，提示管理员继续
+            await env.TOPIC_MAP.put(stateKey, JSON.stringify(state), { expirationTtl: 86400 });
+            Logger.info('cleanup_paused', { scanned: state.scanned, cleaned: state.cleaned, errors: state.errors });
+            await tgCall(env, "sendMessage", withMessageThreadId({
+                chat_id: env.SUPERGROUP_ID,
+                text: `⏸️ **本轮清理暂停（用户较多，自动分批处理）**\n\n- 已扫描: ${state.scanned}\n- 已清理: ${state.cleaned}\n- 探测失败: ${state.errors}\n\n💡 再次发送 /cleanup 将继续扫描，直至提示“清理完成”。`,
+                parse_mode: "Markdown"
+            }, threadId));
+            return;
+        }
+
+        // 全部扫描完成，清除断点
+        await env.TOPIC_MAP.delete(stateKey);
 
         // 生成并发送清理报告
         let reportText = `✅ **清理完成**\n\n`;
         reportText += `📊 **统计信息**\n`;
-        reportText += `- 扫描用户数: ${scannedCount}\n`;
-        reportText += `- 已清理用户数: ${cleanedCount}\n`;
-        reportText += `- 错误数: ${errorCount}\n\n`;
+        reportText += `- 扫描用户数: ${state.scanned}\n`;
+        reportText += `- 已清理用户数: ${state.cleaned}\n`;
+        reportText += `- 探测失败数: ${state.errors}\n\n`;
 
-        if (cleanedCount > 0) {
+        if (state.cleaned > 0) {
             reportText += `🗑️ **已清理的用户** (话题已删除):\n`;
-            for (const user of cleanedUsers.slice(0, CONFIG.MAX_CLEANUP_DISPLAY)) {
+            for (const user of state.users) {
                 reportText += `- UID: \`${user.userId}\` | 话题: ${user.title}\n`;
             }
-            if (cleanedUsers.length > CONFIG.MAX_CLEANUP_DISPLAY) {
-                reportText += `\n...(还有 ${cleanedUsers.length - CONFIG.MAX_CLEANUP_DISPLAY} 个用户)\n`;
+            if (state.cleaned > state.users.length) {
+                reportText += `\n...(还有 ${state.cleaned - state.users.length} 个用户)\n`;
             }
             reportText += `\n💡 这些用户下次发消息时将重新进行人机验证并创建新话题。`;
         } else {
@@ -1217,9 +1276,9 @@ async function handleCleanupCommand(threadId, env) {
         }
 
         Logger.info('cleanup_completed', {
-            cleanedCount,
-            errorCount,
-            totalUsers: scannedCount
+            cleanedCount: state.cleaned,
+            errorCount: state.errors,
+            totalUsers: state.scanned
         });
 
         await tgCall(env, "sendMessage", withMessageThreadId({
@@ -1229,15 +1288,29 @@ async function handleCleanupCommand(threadId, env) {
         }, threadId));
 
     } catch (e) {
+        // 保存断点，下轮可继续
+        await env.TOPIC_MAP.put(stateKey, JSON.stringify(state), { expirationTtl: 86400 }).catch(() => {});
         Logger.error('cleanup_failed', e, { threadId });
         await tgCall(env, "sendMessage", withMessageThreadId({
             chat_id: env.SUPERGROUP_ID,
-            text: `❌ **清理过程出错**\n\n错误信息: \`${e.message}\``,
+            text: `❌ **清理过程出错**\n\n错误信息: \`${e.message}\`\n\n💡 再次发送 /cleanup 可从断点继续。`,
             parse_mode: "Markdown"
         }, threadId));
     } finally {
         await env.TOPIC_MAP.delete(lockKey);
     }
+}
+
+// 带 429 限流重试的话题探测
+async function probeWithRetry(env, threadId, userId) {
+    let probe = await probeForumThread(env, threadId, { userId, reason: "cleanup_check", doubleCheckOnMissingThreadId: false });
+    if (probe.status === "unknown_error" && probe.description && probe.description.includes("Too Many Requests")) {
+        const waitMs = ((probe.retryAfter || 5) + 1) * 1000;
+        Logger.warn('cleanup_probe_rate_limited', { userId, threadId, retryAfter: probe.retryAfter });
+        await new Promise(r => setTimeout(r, waitMs));
+        probe = await probeForumThread(env, threadId, { userId, reason: "cleanup_check_retry", doubleCheckOnMissingThreadId: false });
+    }
+    return probe;
 }
 
 // ---------------- 其他辅助函数 ----------------

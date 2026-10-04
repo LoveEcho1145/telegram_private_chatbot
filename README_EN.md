@@ -48,7 +48,7 @@ Version 6.0 adopts Cloudflare Turnstile web verification, focusing on **stronger
 
 | Feature | Description |
 | :--- | :--- |
-| **🛡️ Turnstile Web Verification** | Uses **Cloudflare Turnstile** for frictionless human verification — users complete it with one click on a web page, effectively blocking ad bots. Provides a **30-day disturbance-free period** after verification, balancing security and user experience. |
+| **🛡️ Turnstile Web Verification** | Uses **Cloudflare Turnstile** for frictionless human verification — completed with one click **inside a Telegram Mini App** (no external browser needed), effectively blocking ad bots. Provides a **30-day disturbance-free period** after verification, balancing security and user experience. |
 | **💬 Topic Group Management** | Utilizes **Telegram Forum Topics** to automatically create a separate topic for each private chat user, isolating messages for organized management. |
 | **👮 Invisible Command System** | Automatically **intercepts** commands starting with `/` sent by users to prevent harassment. Admin commands are only effective within the administrator group. |
 | **🔒 Permission Control** | Powerful command set: Supports **Ban (/ban)**, **Unban (/unban)**, **Delete User (/deluser)**, **Close Ticket (/close)**, and **Trust (/trust)** operations. |
@@ -71,6 +71,8 @@ Version 6.0 adopts Cloudflare Turnstile web verification, focusing on **stronger
 | `/trust` | **Permanent Trust**<br>The user will be permanently exempt from CAPTCHA verification (never expires). | Acquaintances, VIP clients, long-term partners. |
 | `/reset` | **Reset Verification**<br>Forcibly clears the user's verification status; re-verification required next time. | Testing verification flow, or suspected account compromise. |
 | `/info` | **View Info**<br>Displays the current user's UID, Topic ID, and profile link. | Checking user details. |
+| `/cleanup` | **Batch Cleanup**<br>Scans and cleans up user data for deleted topics. Processes in batches when there are many users — just send /cleanup again as prompted to continue. | Cleaning up inactive users. |
+| `/help` | **Command List**<br>Shows the full administrator command reference (works in any topic). | Looking up commands anytime. |
 
 ---
 
