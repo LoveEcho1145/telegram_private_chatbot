@@ -1,4 +1,4 @@
-# 🛡️ TeleGuard (v4.0)
+# 🛡️ TeleGuard (v6.0)
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jikssha/telegram_private_chatbot)
 ![GitHub stars](https://img.shields.io/github/stars/jikssha/telegram_private_chatbot?style=social)
@@ -7,9 +7,25 @@
 
 [🇺🇸 English](README_EN.md) | [🇨🇳 简体中文](README.md)
 
-**Telegram Private Chatbot** is a high-performance, two-way private messaging bot based on **Cloudflare Workers**. It is designed to solve the problem of spam harassment on Telegram, featuring a zero-latency local CAPTCHA verification system, a powerful set of administrator commands, and a seamless message forwarding experience.
+**Telegram Private Chatbot** is a high-performance, two-way private messaging bot based on **Cloudflare Workers**. It is designed to solve the problem of spam harassment on Telegram, featuring a Cloudflare Turnstile web-based human verification system, a powerful set of administrator commands, and a seamless message forwarding experience.
 
 Deploy a free, enterprise-grade customer service system utilizing Cloudflare's powerful edge computing network without purchasing any servers.
+
+---
+
+<details>
+<summary>📢 <b>v6.0 Release Notes (2026-10-04)</b></summary>
+
+### Major Changes:
+- **New Verification Method**: The local quiz verification has been replaced with **Cloudflare Turnstile web verification**. Users tap a button to open a verification page and complete it with one click — stronger bot resistance.
+- **New Command /deluser**: Deletes a banned user's data and topic chat history while **keeping the ban active** (requires /ban first).
+- **New Environment Variables**: `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` (create a free site in the Cloudflare Turnstile dashboard).
+
+### ⚠️ Upgrade Guide:
+1. Update worker.js (Fork users: sync the repo; manual deployers: paste the new code and redeploy).
+2. Go to Cloudflare Dashboard → **Turnstile** → **Add Site**, set the domain to your Worker domain (e.g. `xxx.workers.dev` or your custom domain), and copy the Site Key and Secret Key.
+3. In the Worker's **Settings → Variables**, add `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`, then redeploy.
+</details>
 
 ---
 
@@ -28,15 +44,14 @@ Deploy a free, enterprise-grade customer service system utilizing Cloudflare's p
 
 ## ✨ Key Features
 
-Version 4.0 removes all unstable external API dependencies, focusing on **extreme speed** and **absolute stability**.
+Version 6.0 adopts Cloudflare Turnstile web verification, focusing on **stronger bot resistance** and **absolute stability**.
 
 | Feature | Description |
 | :--- | :--- |
-| **⚡ Zero-Latency Verification** | Uses a **local curated trivia database**. Verifies instantly, completely eliminating network timeouts and API errors with a 100% success rate. |
-| **🛡️ Smart Anti-Spam** | **Short ID mechanism** fixes the Telegram button click failure bug. Provides a **30-day disturbance-free period** after verification, balancing security and user experience. |
+| **🛡️ Turnstile Web Verification** | Uses **Cloudflare Turnstile** for frictionless human verification — users complete it with one click on a web page, effectively blocking ad bots. Provides a **30-day disturbance-free period** after verification, balancing security and user experience. |
 | **💬 Topic Group Management** | Utilizes **Telegram Forum Topics** to automatically create a separate topic for each private chat user, isolating messages for organized management. |
 | **👮 Invisible Command System** | Automatically **intercepts** commands starting with `/` sent by users to prevent harassment. Admin commands are only effective within the administrator group. |
-| **🔒 Permission Control** | Powerful command set: Supports **Ban (/ban)**, **Unban (/unban)**, **Close Ticket (/close)**, and **Trust (/trust)** operations. |
+| **🔒 Permission Control** | Powerful command set: Supports **Ban (/ban)**, **Unban (/unban)**, **Delete User (/deluser)**, **Close Ticket (/close)**, and **Trust (/trust)** operations. |
 | **☁️ Serverless** | Runs entirely on Cloudflare Workers. **Zero cost**, server-free, maintenance-free, and handles high concurrency. |
 | **📸 Multimedia Support** | Perfectly supports two-way forwarding of text, images, videos, files, and other message formats without losing any details. |
 
@@ -52,6 +67,7 @@ Version 4.0 removes all unstable external API dependencies, focusing on **extrem
 | `/open` | **Reopen Chat**<br>Resumes message forwarding for the user. | Accidental closure, or the user needs to contact again. |
 | `/ban` | **Ban User**<br>The bot will completely ignore all messages from this user (no notification). | Malicious spamming, ad bots. |
 | `/unban` | **Unban User**<br>Restores the user's normal communication permissions. | Giving a second chance. |
+| `/deluser` | **Delete User Data**<br>Clears the user's KV data and topic chat history while **keeping the ban active** (requires /ban first). | Completely erasing traces of banned users. |
 | `/trust` | **Permanent Trust**<br>The user will be permanently exempt from CAPTCHA verification (never expires). | Acquaintances, VIP clients, long-term partners. |
 | `/reset` | **Reset Verification**<br>Forcibly clears the user's verification status; re-verification required next time. | Testing verification flow, or suspected account compromise. |
 | `/info` | **View Info**<br>Displays the current user's UID, Topic ID, and profile link. | Checking user details. |
@@ -67,6 +83,10 @@ Version 4.0 removes all unstable external API dependencies, focusing on **extrem
     * Add the bot to the group and set it as an **Administrator** (grant "Manage Topics" permission).
     * Get the Group ID (usually starts with `-100`).
     > **Tip for getting SUPERGROUP_ID**: In Telegram Desktop, right-click any message in the group and copy the message link. The link will contain a segment like `-100xxxxxxxxxx` or `xxxxxxxxxx`. If you only see numbers `xxxxxxxxxx`, add `-100` in front to get the full `SUPERGROUP_ID` (same applies to private channels/groups).
+3.  **Cloudflare Turnstile**: Log in to [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Turnstile** → **Add Site**:
+    * Set **Domain** to your Worker domain (e.g. `xxx.workers.dev`, or your custom domain if you use one).
+    * Choose **Managed** as the Widget Mode.
+    * After creation you will get a **Site Key** and a **Secret Key**, which are needed during deployment.
 
 ### Method 1: One-Click Deploy via GitHub (Recommended ★)
 
@@ -90,6 +110,8 @@ This is the simplest automated deployment method. Cloudflare will automatically 
     * **Add Environment Variables**:
         * `BOT_TOKEN`: Your bot token.
         * `SUPERGROUP_ID`: Your group ID (e.g., -100123...).
+        * `TURNSTILE_SITE_KEY`: The Site Key of your Turnstile site.
+        * `TURNSTILE_SECRET_KEY`: The Secret Key of your Turnstile site.
 8.  **Final Step**: After configuration, go to the **Deployments** tab at the top, find the latest deployment record, and click **Retry deployment** on the right to apply variables.
 
 ### Method 2: Manual Deployment (Simple & Direct)
@@ -104,7 +126,7 @@ If you don't want to link GitHub, you can copy the code directly.
 6.  **Configure KV & Variables**:
     * Go to **Settings** -> **Variables**.
     * Add KV Binding: Variable name `TOPIC_MAP`, bind to a KV database.
-    * Add Environment Variables: `BOT_TOKEN` and `SUPERGROUP_ID`.
+    * Add Environment Variables: `BOT_TOKEN`, `SUPERGROUP_ID`, `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY`.
     * Click **Save and Deploy**.
 
 ---
@@ -125,8 +147,8 @@ If it returns `{"ok":true, "result":true, "description":"Webhook was set"}`, the
 
 ## ❓ FAQ
 
-**Q: Why does clicking the verification button do nothing?**
-A: Please check if the Webhook is set correctly. You must ensure Telegram is allowed to send `callback_query` events. Please perform the reset operation in the "Final Step" above.
+**Q: Why can't users open the verification page or complete verification?**
+A: Please check: 1. `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` are set correctly and belong to the same Turnstile site; 2. The Turnstile site's Domain includes your Worker domain (e.g. `xxx.workers.dev` or your custom domain); 3. You redeployed the Worker after changing variables.
 
 **Q: Why can't the bot create topics in the group?**
 A: Please ensure: 1. Group ID is correct (starts with -100); 2. Topics are enabled in the group; 3. The bot is an administrator and has "Manage Topics" permission.

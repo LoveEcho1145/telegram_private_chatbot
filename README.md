@@ -1,4 +1,4 @@
-# 🤖 Telegram Private Chatbot (v5.3) 
+# 🤖 Telegram Private Chatbot (v6.0)
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jikssha/telegram_private_chatbot)
 ![GitHub stars](https://img.shields.io/github/stars/jikssha/telegram_private_chatbot?style=social)
@@ -6,29 +6,25 @@
 [![Telegram](https://img.shields.io/badge/Telegram-DM-blue?style=social&logo=telegram)](https://t.me/vaghr_wegram_bot)
 [🇺🇸 English](README_EN.md) | [🇨🇳 简体中文](README.md)
 
-**Telegram Private Chatbot** 是一个基于 **Cloudflare Workers** 的高性能 Telegram 双向私聊机器人。它专为解决 Telegram 上的垃圾广告骚扰而生，拥有 0 延迟的本地人机验证系统、强大的管理员指令集以及无缝的消息转发体验。
+**Telegram Private Chatbot** 是一个基于 **Cloudflare Workers** 的高性能 Telegram 双向私聊机器人。它专为解决 Telegram 上的垃圾广告骚扰而生，拥有 Cloudflare Turnstile 网页人机验证系统、强大的管理员指令集以及无缝的消息转发体验。
 
 无需购买服务器，利用 Cloudflare 强大的边缘计算网络，即可免费部署一套企业级的客户服务系统。
 
 ---
 
 <details>
-<summary>📢 <b>v5.1 版本重要更新公告 (2026-01-05)</b></summary>
-   
-### 主要修复：
-- **自动话题修复**：被删除话题用户不再转发到 General，会自动新建话题。
-- **话题无限循环修复**：针对创建失败添加重试机制，最多重试 3 次。
-- **消息路由规范化**：修复字符串与数字混用问题，统一规范化为 String 类型。
-- **并发验证加固**：添加验证锁机制，彻底杜绝并发绕过漏洞。
-- **数据读取保护**：实现 `safeGetJSON()` 安全读取机制，防止 KV 数据损坏导致崩溃。
-- **验证系统重构**：改用索引方案，完全避免按钮回调截断问题，100% 可用。
-   
-### 更新功能：
-**批量清理工具**：/cleanup  # 扫描并清理已删除话题的用户数据
+<summary>📢 <b>v6.0 版本重要更新公告 (2026-10-04)</b></summary>
+
+### 主要变更：
+- **验证方式更换**：移除本地答题验证，改用 **Cloudflare Turnstile 网页验证**。用户点击按钮打开验证网页，一键完成，防机器人能力更强。
+- **新增指令 /deluser**：删除已封禁用户的数据与话题聊天记录，**保留封禁状态**（需先 /ban）。
+- **新增环境变量**：`TURNSTILE_SITE_KEY` 和 `TURNSTILE_SECRET_KEY`（在 Cloudflare Turnstile 控制台免费创建站点获取）。
 
 ### ⚠️ 更新指南：
-Fork用户可直接点击sync 更新同步，自动更新
-手动部署用户复制worker.js代码到worker,重新部署一次
+
+1. 更新 worker.js 代码（Fork 用户直接 sync，手动部署用户复制代码重新部署）。
+2. 前往 Cloudflare Dashboard → **Turnstile** → **Add Site**，域名填写你的 Worker 域名（如 `xxx.workers.dev` 或自定义域名），获取 Site Key 和 Secret Key。
+3. 在 Worker 的 **Settings → Variables** 中添加 `TURNSTILE_SITE_KEY` 和 `TURNSTILE_SECRET_KEY` 两个环境变量，然后重新部署。
 </details>
 
 ---
@@ -89,6 +85,10 @@ v4.0 版本移除了所有不稳定的外部 API 依赖，专注于**极致的�
     * 获取群组 ID（通常以 `-100` 开头）。
      ``获取 SUPERGROUP_ID 小技巧：
 在 Telegram 桌面端右键群内任意消息，复制消息链接；链接里会有一段 -100xxxxxxxxxx 或 xxxxxxxxxx；若只看到纯数字 xxxxxxxxxx，在前面加上 -100，就是完整的 SUPERGROUP_ID（私密频道/群组同理）。``
+3.  **Cloudflare Turnstile**：登录 [Cloudflare Dashboard](https://dash.cloudflare.com/) → **Turnstile** → **Add Site**：
+    * **Domain** 填写你的 Worker 域名（如 `xxx.workers.dev`，使用自定义域名则填自定义域名）。
+    * **Widget Mode** 选择 **Managed** 即可。
+    * 创建后获得 **Site Key** 和 **Secret Key**，稍后部署时用到。
 
 ### 方法一：GitHub 一键连接部署 (推荐 ★)
 
@@ -112,6 +112,8 @@ v4.0 版本移除了所有不稳定的外部 API 依赖，专注于**极致的�
     * **添加环境变量**：
         * `BOT_TOKEN`: 你的机器人 Token。
         * `SUPERGROUP_ID`: 你的群组 ID (例如 -100123...)。
+        * `TURNSTILE_SITE_KEY`: Turnstile 站点的 Site Key。
+        * `TURNSTILE_SECRET_KEY`: Turnstile 站点的 Secret Key。
 8.  **最后一步**：配置完成后，点击页面顶部的 **Deployments** 标签，找到最新的部署记录，点击右侧的 **Retry deployment** (重新部署)，让变量生效。
 
 ### 方法二：手动复制部署 (简单直接)
@@ -126,7 +128,7 @@ v4.0 版本移除了所有不稳定的外部 API 依赖，专注于**极致的�
 6.  **配置 KV 与变量**：
     * 去 **Settings** -> **Variables**。
     * 添加 KV 绑定：Variable name 填 `TOPIC_MAP`，并绑定一个 KV 数据库。
-    * 添加环境变量：`BOT_TOKEN` 和 `SUPERGROUP_ID`。
+    * 添加环境变量：`BOT_TOKEN`、`SUPERGROUP_ID`、`TURNSTILE_SITE_KEY` 和 `TURNSTILE_SECRET_KEY`。
     * 点击 **Save and Deploy**。
 
 ---
@@ -149,8 +151,8 @@ v4.0 版本移除了所有不稳定的外部 API 依赖，专注于**极致的�
 
 ## ❓ 常见问题 (FAQ)
 
-**Q1: 为什么点击验证按钮没有反应？**
-A: 请检查 Webhook 是否正确设置。必须确保 Telegram 允许发送 `callback_query` 事件。请务必执行上述“最后一步”中的重置操作。
+**Q1: 为什么用户点击验证按钮打不开网页或验证失败？**
+A: 请检查：1. `TURNSTILE_SITE_KEY` 和 `TURNSTILE_SECRET_KEY` 是否配置正确且属于同一个 Turnstile 站点；2. Turnstile 站点的 Domain 是否包含你的 Worker 域名（如 `xxx.workers.dev` 或自定义域名）；3. 修改变量后是否重新部署了 Worker。
 
 **Q2: 为什么机器人无法在群里创建话题？**
 A: 请确保：1. 群组 ID 正确（-100开头）；2. 群组已开启 Topics 功能；3. 机器人是群管理员且拥有 "Manage Topics" 权限。
@@ -158,12 +160,12 @@ A: 请确保：1. 群组 ID 正确（-100开头）；2. 群组已开启 Topics �
 **Q3: 为什么人机验证能通过收不到转发的消息？**
 A: 请仔细检查所有变量名称和id是否准确，删除webhook再重新激活。
  `(https://api.telegram.org/bot)<YOUR_TOKEN>/deleteWebhook?drop_pending_updates=true` 
-  
+
   如果依然无法正常转发消息，尝试完成所有步骤后，最后再添加bot的管理员权限。
-  
+
 **Q4: 为什么webhook设置失败？**
 A: 如果你设置了自定义域名不成功，Webhook 改回 workers.dev 域名再尝试。这种情况是你域名解析失败或者网络环境阻断造成的
- 
+
 ---
 
 ## 🔒 安全说明
