@@ -1,4 +1,4 @@
-# 🤖 Telegram Private Chatbot (v6.0)
+# 🤖 Telegram Private Chatbot (v6.1)
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jikssha/telegram_private_chatbot)
 ![GitHub stars](https://img.shields.io/github/stars/jikssha/telegram_private_chatbot?style=social)
@@ -13,9 +13,14 @@
 ---
 
 <details>
-<summary>📢 <b>v6.0 版本重要更新公告 (2026-10-04)</b></summary>
+<summary>📢 <b>v6.1 版本更新 (2026-10-11)</b></summary>
 
-### 主要变更：
+### 本次更新：
+- **新增指令 /cleanbanned**：在通用频道发送，自动查找所有被封禁账号并清除其数据与聊天记录，**保留封禁状态**（较多时自动分批，按提示重复发送即可）。
+- **验证消息自动清理**：CF 验证通过后，验证消息自动变为"验证通过"，稍后自动删除。
+- **送达回执**：用户消息成功送达管理员话题后，机器人回复"✅ 已送达"提示，稍后自动消失。
+
+### 历史变更 (v6.0)：
 - **验证方式更换**：移除本地答题验证，改用 **Cloudflare Turnstile 网页验证**。用户点击按钮打开验证网页，一键完成，防机器人能力更强。
 - **新增指令 /deluser**：删除已封禁用户的数据与话题聊天记录，**保留封禁状态**（需先 /ban）。
 - **新增环境变量**：`TURNSTILE_SITE_KEY` 和 `TURNSTILE_SECRET_KEY`（在 Cloudflare Turnstile 控制台免费创建站点获取）。
@@ -71,6 +76,7 @@ v6.0 版本采用 Cloudflare Turnstile 网页验证，专注于**更强的防机
 | `/reset` | **重置验证**<br>强制清除该用户的验证状态，下次需重新验证。 | 测试验证流程，或怀疑账号被盗。 |
 | `/info` | **查看信息**<br>显示当前用户的 UID、话题 ID 和链接。 | 查询用户资料。 |
 | `/cleanup` | **批量清理**<br>扫描并清理已删除话题的用户数据。用户较多时自动分批处理，按提示再次发送即可继续。 | 清理失效用户。 |
+| `/cleanbanned` | **清理封禁账号**<br>自动查找所有被封禁账号，清除其数据与话题聊天记录，**保留封禁状态**。在通用频道发送即可，较多时自动分批处理。 | 批量清理被封禁用户。 |
 | `/help` | **命令表**<br>显示完整的管理员指令说明（任意话题可用）。 | 随时查阅指令。 |
 
 ---
