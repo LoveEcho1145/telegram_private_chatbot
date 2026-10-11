@@ -714,6 +714,9 @@ async function forwardToTopic(msg, userId, key, env, ctx, origin, quiet = false)
 // 给用户发送临时"已送达"提示，稍后自动删除
 async function sendDeliveredHint(userId, env, ctx) {
     const res = await tgCall(env, "sendMessage", { chat_id: userId, text: "✅ 已送达" });
+    if (!res.ok) {
+        Logger.warn('delivered_hint_send_failed', { userId, description: res.description });
+    }
     const msgId = res.result?.message_id;
     if (msgId && ctx && ctx.waitUntil) {
         ctx.waitUntil((async () => {
@@ -983,6 +986,11 @@ async function sendVerificationChallenge(userId, env, pendingMsgId, origin, from
         parse_mode: "Markdown",
         reply_markup: { inline_keyboard: [[{ text: "🛡️ 点击完成验证", web_app: { url: `${origin}/verify?uid=${userId}&token=${verifyId}` } }]] }
     });
+
+    // 记录验证消息发送失败原因（便于 wrangler tail 诊断）
+    if (!sent.ok) {
+        Logger.warn('verification_send_failed', { userId, description: sent.description });
+    }
 
     // 记录验证消息 ID，验证通过后可更新状态并自动删除
     if (sent.ok && sent.result?.message_id) {
