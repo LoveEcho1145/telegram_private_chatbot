@@ -140,9 +140,9 @@ async function isUserVerified(env, userId) {
 
     const justVerified = await env.TOPIC_MAP.get(`just_verified:${userId}`);
     if (justVerified) {
-        // 自愈：补写正式验证状态
+        // 自愈：补写正式验证状态；保留宽限标记并续期（KV 边缘缓存最长 60s 才失效，期间持续兜底）
         await env.TOPIC_MAP.put(`verified:${userId}`, "1", { expirationTtl: CONFIG.VERIFIED_EXPIRE_SECONDS });
-        await env.TOPIC_MAP.delete(`just_verified:${userId}`);
+        await env.TOPIC_MAP.put(`just_verified:${userId}`, "1", { expirationTtl: CONFIG.JUST_VERIFIED_TTL_SECONDS });
         return true;
     }
     return false;
@@ -924,7 +924,7 @@ const VERIFY_TG_INIT = `(function(){var w=window.Telegram&&window.Telegram.WebAp
 async function sendVerificationChallenge(userId, env, pendingMsgId, origin, fromUser) {
     // 刚通过验证（KV 边缘缓存延迟兜底），避免对已验证用户重复下发挑战
     if (await env.TOPIC_MAP.get(`just_verified:${userId}`)) {
-        await env.TOPIC_MAP.delete(`just_verified:${userId}`);
+        await env.TOPIC_MAP.put(`verified:${userId}`, "1", { expirationTtl: CONFIG.VERIFIED_EXPIRE_SECONDS });
         return;
     }
 
