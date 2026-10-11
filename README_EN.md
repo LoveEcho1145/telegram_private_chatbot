@@ -1,4 +1,4 @@
-# 🛡️ TeleGuard (v6.1)
+# 🛡️ TeleGuard (v6.2)
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jikssha/telegram_private_chatbot)
 ![GitHub stars](https://img.shields.io/github/stars/jikssha/telegram_private_chatbot?style=social)
@@ -14,12 +14,18 @@ Deploy a free, enterprise-grade customer service system utilizing Cloudflare's p
 ---
 
 <details>
-<summary>📢 <b>v6.1 Release Notes (2026-10-11)</b></summary>
+<summary>📢 <b>v6.2 Release Notes (2026-10-11)</b></summary>
 
 ### What's New:
-- **New Command /cleanbanned**: Send it in the General topic — the bot automatically finds all banned accounts and clears their data and chat history while **keeping the ban active** (processes in batches when there are many).
+- **Fixed messages failing right after verification**: Cloudflare KV edge-cache delay could misjudge freshly verified users; a "just verified" grace marker now ensures messages forward immediately after verification.
+- **Commands support @bot suffix**: Commands auto-completed with `@BotName` in groups (e.g. `/help@BotName`) now work correctly.
+- **Removed /cleanbanned**: Redundant with the per-topic /deluser — use /deluser instead.
+
+### Previous Changes (v6.1 / v6.0):
 - **Auto-cleaned Verification Message**: After Turnstile verification passes, the verification message is edited to "✅ Verified" and deleted automatically after a few seconds.
 - **Delivery Receipt**: After a user's message is delivered to the admin topic, the bot replies with a "✅ Delivered" hint that disappears automatically.
+- **New Command /deluser**: Deletes a banned user's data and topic chat history while **keeping the ban active** (requires /ban first).
+- **New Verification Method**: **Cloudflare Turnstile** verification completed inside a Telegram Mini App with one click.
 
 ### Previous Changes (v6.0):
 - **New Verification Method**: The local quiz verification has been replaced with **Cloudflare Turnstile web verification**. Users tap a button to open a verification page and complete it with one click — stronger bot resistance.
@@ -77,7 +83,6 @@ Version 6.0 adopts Cloudflare Turnstile web verification, focusing on **stronger
 | `/reset` | **Reset Verification**<br>Forcibly clears the user's verification status; re-verification required next time. | Testing verification flow, or suspected account compromise. |
 | `/info` | **View Info**<br>Displays the current user's UID, Topic ID, and profile link. | Checking user details. |
 | `/cleanup` | **Batch Cleanup**<br>Scans and cleans up user data for deleted topics. Processes in batches when there are many users — just send /cleanup again as prompted to continue. | Cleaning up inactive users. |
-| `/cleanbanned` | **Clean Banned Accounts**<br>Automatically finds all banned accounts and clears their data and topic chat history while **keeping the ban active**. Send in the General topic; processes in batches. | Bulk-cleaning banned users. |
 | `/help` | **Command List**<br>Shows the full administrator command reference (works in any topic). | Looking up commands anytime. |
 
 ---
