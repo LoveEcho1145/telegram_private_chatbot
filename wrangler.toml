@@ -19,6 +19,17 @@ custom_domain = true
 binding = "TOPIC_MAP"
 id = "b191676605fa442b91a2096c09d11fb1"
 
+# Durable Object：强一致验证/封禁状态存储（规避 KV 边缘缓存延迟）
+# 部署时 migrations 会自动创建；若通过 Cloudflare 后台手动部署，
+# 需在 Settings → Variables → Durable Object Bindings 中添加 VERIFIER 绑定
+[[durable_objects.bindings]]
+name = "VERIFIER"
+class_name = "Verifier"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Verifier"]
+
 [vars]
 SUPERGROUP_ID = "-1003893101194"
 TURNSTILE_SITE_KEY = "0x4AAAAAAFNLpM3MQcv_nRH1"

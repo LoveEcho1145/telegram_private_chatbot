@@ -1,5 +1,6 @@
-// Cloudflare Worker：Telegram 双向机器人 v6.2
+// Cloudflare Worker：Telegram 双向机器人 v6.3
 // 人机验证方式：Cloudflare Turnstile 网页验证（需配置 TURNSTILE_SITE_KEY / TURNSTILE_SECRET_KEY）
+// 验证状态由 Durable Object 强一致存储（规避 KV 边缘缓存延迟）；未绑定 DO 时自动降级 KV 方案
 
 // --- 配置常量 ---
 const CONFIG = {
@@ -134,24 +135,84 @@ function normalizeTgDescription(description) {
 }
 
 // 判断用户是否已通过验证（含刚通过验证的短暂宽限期，规避 KV 边缘缓存导致的误判）
+// ---------------- Durable Object：强一致验证/封禁状态 ----------------
+// KV 边缘缓存约 60s：Mini App 验证写入与消息读取发生在不同边缘节点，KV 方案无法即时同步。
+// Durable Object 单实例强一致，写入后任意节点立即可见。
+export class Verifier {
+    constructor(state) {
+        this.state = state;
+        this.data = null;
+    }
+    async fetch(request) {
+        this.data ??= (await this.state.storage.get("data")) || { v: {}, b: {} };
+        this.data.v ??= {};
+        this.data.b ??= {};
+        const url = new URL(request.url);
+        const uid = url.searchParams.get("uid");
+        let write = true;
+        switch (url.pathname) {
+            case "/checkv": return new Response(this.data.v[uid] ? "1" : "0");
+            case "/checkb": return new Response(this.data.b[uid] ? "1" : "0");
+            case "/setv": this.data.v[uid] = 1; break;
+            case "/delv": delete this.data.v[uid]; break;
+            case "/setb": this.data.b[uid] = 1; break;
+            case "/delb": delete this.data.b[uid]; break;
+            default: write = false;
+        }
+        if (write) await this.state.storage.put("data", this.data);
+        return new Response("ok");
+    }
+}
+
+// DO 读取（未绑定或异常时返回 null，由调用方回退 KV）
+async function doCheck(env, kind, userId) {
+    if (!env.VERIFIER) return null;
+    try {
+        const stub = env.VERIFIER.get(env.VERIFIER.idFromName("global"));
+        const res = await stub.fetch(`https://verifier/${kind}?uid=${userId}`);
+        return await res.text() === "1";
+    } catch (e) {
+        Logger.warn('do_check_failed', { userId, kind });
+        return null;
+    }
+}
+
+// DO 写入（best-effort，失败仅记日志）
+async function doWrite(env, op, userId) {
+    if (!env.VERIFIER) return;
+    try {
+        const stub = env.VERIFIER.get(env.VERIFIER.idFromName("global"));
+        await stub.fetch(`https://verifier/${op}?uid=${userId}`);
+    } catch (e) {
+        Logger.warn('do_write_failed', { userId, op });
+    }
+}
+
+// 认证关键键读取：绕过边缘缓存直读中央存储，保证验证写入后立即可见。
+// cacheTtl:0 不被支持时安全降级为普通读取（由 Durable Object / 兜底逻辑继续生效）。
+async function kvGetAuth(env, key) {
+    try {
+        return await env.TOPIC_MAP.get(key, { cacheTtl: 0 });
+    } catch (e) {
+        return env.TOPIC_MAP.get(key);
+    }
+}
+
 // 判断用户是否已通过验证
-// 注意：KV 边缘缓存约 60s——验证由用户浏览器直接 POST 到某边缘节点写入，webhook 所在节点可能迟迟读不到。
-// 利用 KV「删除立即全局生效」的不对称语义：验证完成会删除 user_challenge（此读数可靠），
-// 再配合仅验证流程写入、且验证前流程绝不读取的 just_verified 事件键做兜底。
+// 优先 Durable Object（强一致，写入立即可见）；未绑定/异常时回退 KV 三层判断。
 async function isUserVerified(env, userId) {
-    const verified = await env.TOPIC_MAP.get(`verified:${userId}`);
+    const doResult = await doCheck(env, "checkv", userId);
+    if (doResult === true) return true;
+
+    const verified = await kvGetAuth(env, `verified:${userId}`);
     if (verified) return true;
 
-    // verified 读不到：可能是真未验证，也可能是验证后的缓存延迟。
-    // user_challenge 在验证完成时被删除，删除会立即清除所有边缘缓存，此读数可靠：
-    const challengeId = await env.TOPIC_MAP.get(`user_challenge:${userId}`);
+    const challengeId = await kvGetAuth(env, `user_challenge:${userId}`);
     if (challengeId) return false; // 确有进行中的验证 → 真未验证
 
-    // 无进行中的验证但 verified 读不到 → 查验证事件键（验证前流程不读它，无缓存污染）
-    const justVerified = await env.TOPIC_MAP.get(`just_verified:${userId}`);
+    const justVerified = await kvGetAuth(env, `just_verified:${userId}`);
     if (justVerified) {
         await env.TOPIC_MAP.put(`verified:${userId}`, "1", { expirationTtl: CONFIG.VERIFIED_EXPIRE_SECONDS });
-        await env.TOPIC_MAP.put(`just_verified:${userId}`, "1", { expirationTtl: CONFIG.JUST_VERIFIED_TTL_SECONDS });
         return true;
     }
     return false;
@@ -263,6 +324,7 @@ async function resetUserVerificationAndRequireReverify(env, { userId, userKey, o
     // 清理旧映射与验证状态：用户需要重新做人机验证
     await env.TOPIC_MAP.delete(`verified:${userId}`);
     await env.TOPIC_MAP.delete(`just_verified:${userId}`);
+    await doWrite(env, "delv", userId);
     await env.TOPIC_MAP.put(`needs_verify:${userId}`, "1", { expirationTtl: CONFIG.NEEDS_REVERIFY_TTL_SECONDS });
     await env.TOPIC_MAP.delete(`retry:${userId}`);
 
@@ -480,7 +542,9 @@ async function handlePrivateMessage(msg, env, ctx, origin) {
       return;
   }
 
-  const isBanned = await env.TOPIC_MAP.get(`banned:${userId}`);
+  const doBan = await doCheck(env, "checkb", userId);
+  if (doBan === true) return;
+  const isBanned = await kvGetAuth(env, `banned:${userId}`);
   if (isBanned) return;
 
   const verified = await isUserVerified(env, userId);
@@ -497,7 +561,7 @@ async function handlePrivateMessage(msg, env, ctx, origin) {
 
 async function forwardToTopic(msg, userId, key, env, ctx, origin, quiet = false) {
     // 并发兜底：如果已被标记为需要重新验证，直接发起验证并暂停转发/建话题
-    const needsVerify = await env.TOPIC_MAP.get(`needs_verify:${userId}`);
+    const needsVerify = await kvGetAuth(env, `needs_verify:${userId}`);
     if (needsVerify) {
         if (await isUserVerified(env, userId)) {
             // 刚通过验证（KV 缓存延迟导致标记残留），清除后继续转发
@@ -868,6 +932,7 @@ async function handleAdminReply(msg, env, ctx) {
   if (cmd === "/reset") {
       await env.TOPIC_MAP.delete(`verified:${userId}`);
       await env.TOPIC_MAP.delete(`just_verified:${userId}`);
+      await doWrite(env, "delv", userId);
       await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🔄 **验证重置**", parse_mode: "Markdown" });
       return;
   }
@@ -875,18 +940,21 @@ async function handleAdminReply(msg, env, ctx) {
   if (cmd === "/trust") {
       await env.TOPIC_MAP.put(`verified:${userId}`, "trusted");
       await env.TOPIC_MAP.delete(`needs_verify:${userId}`);
+      await doWrite(env, "setv", userId);
       await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🌟 **已设置永久信任**", parse_mode: "Markdown" });
       return;
   }
 
   if (cmd === "/ban") {
       await env.TOPIC_MAP.put(`banned:${userId}`, "1");
+      await doWrite(env, "setb", userId);
       await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "🚫 **用户已封禁**", parse_mode: "Markdown" });
       return;
   }
 
   if (cmd === "/unban") {
       await env.TOPIC_MAP.delete(`banned:${userId}`);
+      await doWrite(env, "delb", userId);
       await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "✅ **用户已解封**", parse_mode: "Markdown" });
       return;
   }
@@ -1129,6 +1197,7 @@ async function completeVerification(userId, verifyId, state, env, ctx, origin) {
     await env.TOPIC_MAP.put(`verified:${userId}`, "1", { expirationTtl: CONFIG.VERIFIED_EXPIRE_SECONDS });
     // 写入"刚通过验证"宽限标记（规避 KV 边缘缓存延迟导致的误判）
     await env.TOPIC_MAP.put(`just_verified:${userId}`, "1", { expirationTtl: CONFIG.JUST_VERIFIED_TTL_SECONDS });
+    await doWrite(env, "setv", userId);
     await env.TOPIC_MAP.delete(`needs_verify:${userId}`);
     await env.TOPIC_MAP.delete(`chal:${verifyId}`);
     await env.TOPIC_MAP.delete(`user_challenge:${userId}`);
@@ -1288,8 +1357,10 @@ async function handleCleanupCommand(threadId, env) {
                 // cleanup 要求更保守：仅在明确缺失/重定向时清理，避免误删有效记录
                 if (probe.status === "redirected" || probe.status === "missing") {
                     await env.TOPIC_MAP.delete(name);
-                    await env.TOPIC_MAP.delete(`verified:${userId}`);
-                    await env.TOPIC_MAP.delete(`thread:${topicThreadId}`);
+                await env.TOPIC_MAP.delete(`verified:${userId}`);
+                await env.TOPIC_MAP.delete(`just_verified:${userId}`);
+                await doWrite(env, "delv", userId);
+                await env.TOPIC_MAP.delete(`thread:${topicThreadId}`);
                     state.cleaned++;
                     if (state.users.length < CONFIG.MAX_CLEANUP_DISPLAY) {
                         state.users.push({ userId, title: rec.title || "未知" });
@@ -1455,6 +1526,8 @@ async function handleCleanBannedCommand(threadId, env) {
                 await env.TOPIC_MAP.delete(`user:${userId}`);
                 await env.TOPIC_MAP.delete(`verified:${userId}`);
                 await env.TOPIC_MAP.delete(`just_verified:${userId}`);
+                await doWrite(env, "delv", userId);
+                await doWrite(env, "setb", userId);
                 await env.TOPIC_MAP.delete(`needs_verify:${userId}`);
                 await env.TOPIC_MAP.delete(`user_challenge:${userId}`);
                 await env.TOPIC_MAP.delete(`retry:${userId}`);

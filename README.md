@@ -1,4 +1,4 @@
-# 🤖 Telegram Private Chatbot (v6.2)
+# 🤖 Telegram Private Chatbot (v6.3)
 
 [![Deploy to Cloudflare Workers](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/jikssha/telegram_private_chatbot)
 ![GitHub stars](https://img.shields.io/github/stars/jikssha/telegram_private_chatbot?style=social)
@@ -13,16 +13,18 @@
 ---
 
 <details>
-<summary>📢 <b>v6.2 版本更新 (2026-10-11)</b></summary>
+<summary>📢 <b>v6.3 版本更新 (2026-10-11)</b></summary>
 
 ### 本次更新：
-- **修复验证通过后短暂无法发消息**：Cloudflare KV 边缘缓存延迟导致刚验证的用户被误判，现在通过"刚验证"宽限标记兜底，验证后消息立即正常转发。
-- **命令支持 @机器人 后缀**：群组内点击命令自动带上的 `@BotName` 后缀不再导致指令失效。
-- **移除 /deluser**：批量清理统一使用通用频道的 /cleanbanned。
+- **根治"验证后约 1 分钟无法发消息"**：验证状态改由 **Durable Object 强一致存储**（KV 边缘缓存对不同步，此问题在 Mini App 网页验证架构下不可避免）。
+- **新增 Durable Object 绑定 `VERIFIER`**：wrangler 部署自动创建（migrations 已配置）；若通过 Cloudflare 后台手动部署，需在 **Settings → Variables → Durable Object Bindings** 添加 `VERIFIER` 绑定（class: `Verifier`），否则自动降级为 KV 方案（旧问题会复现）。
 
-### 历史更新 (v6.1 / v6.0)：
-- **验证消息自动清理**：CF 验证通过后，验证消息自动变为"验证通过"，稍后自动删除。
-- **送达回执**：用户消息成功送达管理员话题后，机器人回复"✅ 已送达"提示，稍后自动消失。
+### 历史更新 (v6.2 / v6.1 / v6.0)：
+- **修复验证通过后短暂无法发消息**：KV 边缘缓存延迟导致的误判（v6.3 已根治）。
+- **命令支持 @机器人 后缀**：群组内自动附加的 `@BotName` 不再导致指令失效。
+- **移除 /deluser**：批量清理统一使用通用频道的 /cleanbanned。
+- **验证消息自动清理**：CF 验证通过后，验证消息自动变为"验证通过"并稍后删除。
+- **送达回执**：用户消息送达后回复"✅ 已送达"提示，稍后自动消失。
 - **验证方式更换**：本地答题验证改为 **Cloudflare Turnstile**，在 Telegram Mini App 内一键完成。
 
 ### ⚠️ 更新指南：
