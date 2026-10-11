@@ -748,9 +748,9 @@ async function sendAdminHelp(threadId, env) {
 恢复该用户的正常通讯权限。
 给予改过自新的机会。
 
-/deluser 删除用户数据
-清除该用户的数据与话题聊天记录，保留封禁状态（需先 /ban）。
-彻底清理被封禁用户的痕迹。
+/cleanbanned 清理封禁账号
+在通用频道发送，自动查找所有被封禁的账号，
+清除其数据与话题聊天记录，保留封禁状态。较多时会分批处理。
 
 /trust 永久信任
 该用户将永久免除人机验证（永不过期）。
@@ -793,6 +793,12 @@ async function handleAdminReply(msg, env, ctx) {
   if (cmd === "/cleanup") {
       // /cleanup 可能处理较久，使用 waitUntil 防止 webhook 请求超时导致“卡住”
       ctx.waitUntil(handleCleanupCommand(threadId, env));
+      return;
+  }
+
+  // 在通用频道批量清理所有被封禁账号（自动查找 banned: 记录）
+  if (cmd === "/cleanbanned") {
+      ctx.waitUntil(handleCleanBannedCommand(threadId, env));
       return;
   }
 
@@ -870,39 +876,6 @@ async function handleAdminReply(msg, env, ctx) {
   if (cmd === "/unban") {
       await env.TOPIC_MAP.delete(`banned:${userId}`);
       await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "✅ **用户已解封**", parse_mode: "Markdown" });
-      return;
-  }
-
-  if (cmd === "/deluser") {
-      const banned = await env.TOPIC_MAP.get(`banned:${userId}`);
-      if (!banned) {
-          await tgCall(env, "sendMessage", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId, text: "⚠️ 该用户未被封禁。请先使用 /ban 封禁，再执行删除。", parse_mode: "Markdown" });
-          return;
-      }
-
-      // 清除用户数据与聊天记录（保留 banned: 封禁状态）
-      await env.TOPIC_MAP.delete(`user:${userId}`);
-      await env.TOPIC_MAP.delete(`verified:${userId}`);
-      await env.TOPIC_MAP.delete(`needs_verify:${userId}`);
-      await env.TOPIC_MAP.delete(`user_challenge:${userId}`);
-      await env.TOPIC_MAP.delete(`retry:${userId}`);
-      await env.TOPIC_MAP.delete(`thread:${threadId}`);
-      await env.TOPIC_MAP.delete(`thread_ok:${threadId}`);
-      threadHealthCache.delete(threadId);
-
-      // 删除话题以清除聊天记录
-      const del = await tgCall(env, "deleteForumTopic", { chat_id: env.SUPERGROUP_ID, message_thread_id: threadId });
-
-      Logger.info('user_deleted', { userId, threadId, topicDeleted: !!del.ok });
-
-      // 话题删除后无法再向其发送消息，结果发到 General
-      await tgCall(env, "sendMessage", {
-          chat_id: env.SUPERGROUP_ID,
-          text: del.ok
-              ? `🗑️ **已删除用户数据**\nUID: \`${userId}\`\n话题与聊天记录已清除，封禁状态保留。`
-              : `⚠️ **用户数据已清除，但话题删除失败**\nUID: \`${userId}\`\n原因: ${del.description || "未知"}\n封禁状态保留。`,
-          parse_mode: "Markdown"
-      });
       return;
   }
 
@@ -1403,7 +1376,157 @@ async function probeWithRetry(env, threadId, userId) {
     return probe;
 }
 
-// /cleanbanned 已移除：与话题内 /deluser 职责重复，统一使用 /deluser
+// /cleanbanned：在通用频道批量清理所有被封禁账号（清除数据与聊天记录，保留封禁状态）
+async function handleCleanBannedCommand(threadId, env) {
+    const lockKey = "cleanbanned:lock";
+    const stateKey = "cleanbanned:state";
+
+    const locked = await env.TOPIC_MAP.get(lockKey);
+    if (locked) {
+        await tgCall(env, "sendMessage", withMessageThreadId({
+            chat_id: env.SUPERGROUP_ID,
+            text: "⏳ **已有清理任务正在运行，请稍后再试。**",
+            parse_mode: "Markdown"
+        }, threadId));
+        return;
+    }
+    await env.TOPIC_MAP.put(lockKey, "1", { expirationTtl: CONFIG.CLEANUP_LOCK_TTL_SECONDS });
+
+    // 断点续扫状态：被封禁用户较多时自动分多轮处理
+    let state = await safeGetJSON(env, stateKey, null);
+    const resumed = !!state;
+    if (!state) {
+        state = { index: 0, scanned: 0, cleaned: 0, skipped: 0, errors: 0, users: [] };
+    }
+
+    await tgCall(env, "sendMessage", withMessageThreadId({
+        chat_id: env.SUPERGROUP_ID,
+        text: resumed
+            ? `🔄 **继续清理被封禁账号...** (此前已处理 ${state.scanned} 个)`
+            : "🔄 **正在清理被封禁账号...**",
+        parse_mode: "Markdown"
+    }, threadId));
+
+    const startedAt = Date.now();
+    let exhausted = false;
+
+    try {
+        // 汇总全部被封禁用户（仅需 key 列表，速度快）
+        let bannedIds = [];
+        let cursor = undefined;
+        do {
+            const result = await env.TOPIC_MAP.list({ prefix: "banned:", cursor });
+            bannedIds = bannedIds.concat((result.keys || []).map(k => Number(k.name.slice(7))));
+            cursor = result.list_complete ? undefined : result.cursor;
+        } while (cursor);
+        const total = bannedIds.length;
+
+        for (let i = state.index; i < total; i++) {
+            // 时间预算：超出则保存断点，下轮从此处继续
+            if (Date.now() - startedAt > CONFIG.CLEANUP_TIME_BUDGET_MS) {
+                exhausted = true;
+                state.index = i;
+                break;
+            }
+
+            const userId = bannedIds[i];
+            state.scanned++;
+            const rec = await safeGetJSON(env, `user:${userId}`, null);
+
+            if (!rec) {
+                // 用户数据已不存在，仅保留封禁状态
+                state.skipped++;
+                continue;
+            }
+
+            try {
+                const userThreadId = rec.thread_id;
+                await env.TOPIC_MAP.delete(`user:${userId}`);
+                await env.TOPIC_MAP.delete(`verified:${userId}`);
+                await env.TOPIC_MAP.delete(`just_verified:${userId}`);
+                await env.TOPIC_MAP.delete(`needs_verify:${userId}`);
+                await env.TOPIC_MAP.delete(`user_challenge:${userId}`);
+                await env.TOPIC_MAP.delete(`retry:${userId}`);
+                if (userThreadId !== undefined && userThreadId !== null) {
+                    await env.TOPIC_MAP.delete(`thread:${userThreadId}`);
+                    await env.TOPIC_MAP.delete(`thread_ok:${userThreadId}`);
+                    threadHealthCache.delete(userThreadId);
+                    // 删除话题以清除聊天记录
+                    await tgCall(env, "deleteForumTopic", { chat_id: env.SUPERGROUP_ID, message_thread_id: userThreadId });
+                }
+                state.cleaned++;
+                if (state.users.length < CONFIG.MAX_CLEANUP_DISPLAY) {
+                    state.users.push({ userId, title: rec.title || "未知" });
+                }
+                Logger.info('banned_user_cleaned', { userId, threadId: userThreadId });
+            } catch (e) {
+                state.errors++;
+                Logger.error('banned_user_clean_failed', e, { userId });
+            }
+
+            // 节流，避免触发 Telegram API 限流
+            await new Promise(r => setTimeout(r, CONFIG.CLEANUP_PROBE_DELAY_MS));
+        }
+
+        if (exhausted) {
+            // 保存断点，提示管理员继续
+            await env.TOPIC_MAP.put(stateKey, JSON.stringify(state), { expirationTtl: 86400 });
+            Logger.info('cleanbanned_paused', { scanned: state.scanned, cleaned: state.cleaned, errors: state.errors });
+            await tgCall(env, "sendMessage", withMessageThreadId({
+                chat_id: env.SUPERGROUP_ID,
+                text: `⏸️ **本轮清理暂停（被封禁账号较多，自动分批处理）**\n\n- 总数: ${total}\n- 已处理: ${state.scanned}\n- 已清理: ${state.cleaned}\n- 无需清理: ${state.skipped}\n- 失败: ${state.errors}\n\n💡 再次发送 /cleanbanned 将继续，直至提示“清理完成”。`,
+                parse_mode: "Markdown"
+            }, threadId));
+            return;
+        }
+
+        // 全部处理完成，清除断点
+        await env.TOPIC_MAP.delete(stateKey);
+
+        let reportText = `✅ **被封禁账号清理完成**\n\n`;
+        reportText += `📊 **统计信息**\n`;
+        reportText += `- 被封禁账号总数: ${total}\n`;
+        reportText += `- 已清理（数据+聊天记录）: ${state.cleaned}\n`;
+        reportText += `- 无需清理: ${state.skipped}\n`;
+        reportText += `- 失败: ${state.errors}\n\n`;
+        reportText += `💡 封禁状态已保留，这些账号发消息仍会被机器人无视。`;
+
+        if (state.cleaned > 0) {
+            reportText += `\n\n🗑️ **已清理的用户**:\n`;
+            for (const user of state.users) {
+                reportText += `- UID: \`${user.userId}\` | 话题: ${user.title}\n`;
+            }
+            if (state.cleaned > state.users.length) {
+                reportText += `\n...(还有 ${state.cleaned - state.users.length} 个用户)\n`;
+            }
+        }
+
+        Logger.info('cleanbanned_completed', {
+            total,
+            cleaned: state.cleaned,
+            skipped: state.skipped,
+            errors: state.errors
+        });
+
+        await tgCall(env, "sendMessage", withMessageThreadId({
+            chat_id: env.SUPERGROUP_ID,
+            text: reportText,
+            parse_mode: "Markdown"
+        }, threadId));
+
+    } catch (e) {
+        // 保存断点，下轮可继续
+        await env.TOPIC_MAP.put(stateKey, JSON.stringify(state), { expirationTtl: 86400 }).catch(() => {});
+        Logger.error('cleanbanned_failed', e, { threadId });
+        await tgCall(env, "sendMessage", withMessageThreadId({
+            chat_id: env.SUPERGROUP_ID,
+            text: `❌ **清理过程出错**\n\n错误信息: \`${e.message}\`\n\n💡 再次发送 /cleanbanned 可从断点继续。`,
+            parse_mode: "Markdown"
+        }, threadId));
+    } finally {
+        await env.TOPIC_MAP.delete(lockKey);
+    }
+}
 
 // ---------------- 其他辅助函数 ----------------
 

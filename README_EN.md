@@ -19,17 +19,15 @@ Deploy a free, enterprise-grade customer service system utilizing Cloudflare's p
 ### What's New:
 - **Fixed messages failing right after verification**: Cloudflare KV edge-cache delay could misjudge freshly verified users; a "just verified" grace marker now ensures messages forward immediately after verification.
 - **Commands support @bot suffix**: Commands auto-completed with `@BotName` in groups (e.g. `/help@BotName`) now work correctly.
-- **Removed /cleanbanned**: Redundant with the per-topic /deluser — use /deluser instead.
+- **Removed /deluser**: Use /cleanbanned in the General topic for bulk cleanup instead.
 
 ### Previous Changes (v6.1 / v6.0):
 - **Auto-cleaned Verification Message**: After Turnstile verification passes, the verification message is edited to "✅ Verified" and deleted automatically after a few seconds.
 - **Delivery Receipt**: After a user's message is delivered to the admin topic, the bot replies with a "✅ Delivered" hint that disappears automatically.
-- **New Command /deluser**: Deletes a banned user's data and topic chat history while **keeping the ban active** (requires /ban first).
 - **New Verification Method**: **Cloudflare Turnstile** verification completed inside a Telegram Mini App with one click.
 
 ### Previous Changes (v6.0):
 - **New Verification Method**: The local quiz verification has been replaced with **Cloudflare Turnstile web verification**. Users tap a button to open a verification page and complete it with one click — stronger bot resistance.
-- **New Command /deluser**: Deletes a banned user's data and topic chat history while **keeping the ban active** (requires /ban first).
 - **New Environment Variables**: `TURNSTILE_SITE_KEY` and `TURNSTILE_SECRET_KEY` (create a free site in the Cloudflare Turnstile dashboard).
 
 ### ⚠️ Upgrade Guide:
@@ -62,7 +60,7 @@ Version 6.0 adopts Cloudflare Turnstile web verification, focusing on **stronger
 | **🛡️ Turnstile Web Verification** | Uses **Cloudflare Turnstile** for frictionless human verification — completed with one click **inside a Telegram Mini App** (no external browser needed), effectively blocking ad bots. Provides a **30-day disturbance-free period** after verification, balancing security and user experience. |
 | **💬 Topic Group Management** | Utilizes **Telegram Forum Topics** to automatically create a separate topic for each private chat user, isolating messages for organized management. |
 | **👮 Invisible Command System** | Automatically **intercepts** commands starting with `/` sent by users to prevent harassment. Admin commands are only effective within the administrator group. |
-| **🔒 Permission Control** | Powerful command set: Supports **Ban (/ban)**, **Unban (/unban)**, **Delete User (/deluser)**, **Close Ticket (/close)**, and **Trust (/trust)** operations. |
+| **🔒 Permission Control** | Powerful command set: Supports **Ban (/ban)**, **Unban (/unban)**, **Clean Banned Accounts (/cleanbanned)**, **Close Ticket (/close)**, and **Trust (/trust)** operations. |
 | **☁️ Serverless** | Runs entirely on Cloudflare Workers. **Zero cost**, server-free, maintenance-free, and handles high concurrency. |
 | **📸 Multimedia Support** | Perfectly supports two-way forwarding of text, images, videos, files, and other message formats without losing any details. |
 
@@ -78,7 +76,7 @@ Version 6.0 adopts Cloudflare Turnstile web verification, focusing on **stronger
 | `/open` | **Reopen Chat**<br>Resumes message forwarding for the user. | Accidental closure, or the user needs to contact again. |
 | `/ban` | **Ban User**<br>The bot will completely ignore all messages from this user (no notification). | Malicious spamming, ad bots. |
 | `/unban` | **Unban User**<br>Restores the user's normal communication permissions. | Giving a second chance. |
-| `/deluser` | **Delete User Data**<br>Clears the user's KV data and topic chat history while **keeping the ban active** (requires /ban first). | Completely erasing traces of banned users. |
+| `/cleanbanned` | **Clean Banned Accounts**<br>Send in the General topic — the bot automatically finds all banned accounts and clears their data and topic chat history while **keeping the ban active**. Processes in batches when there are many. | Bulk-cleaning banned users. |
 | `/trust` | **Permanent Trust**<br>The user will be permanently exempt from CAPTCHA verification (never expires). | Acquaintances, VIP clients, long-term partners. |
 | `/reset` | **Reset Verification**<br>Forcibly clears the user's verification status; re-verification required next time. | Testing verification flow, or suspected account compromise. |
 | `/info` | **View Info**<br>Displays the current user's UID, Topic ID, and profile link. | Checking user details. |
