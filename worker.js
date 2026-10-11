@@ -134,13 +134,22 @@ function normalizeTgDescription(description) {
 }
 
 // 判断用户是否已通过验证（含刚通过验证的短暂宽限期，规避 KV 边缘缓存导致的误判）
+// 判断用户是否已通过验证
+// 注意：KV 边缘缓存约 60s——验证由用户浏览器直接 POST 到某边缘节点写入，webhook 所在节点可能迟迟读不到。
+// 利用 KV「删除立即全局生效」的不对称语义：验证完成会删除 user_challenge（此读数可靠），
+// 再配合仅验证流程写入、且验证前流程绝不读取的 just_verified 事件键做兜底。
 async function isUserVerified(env, userId) {
     const verified = await env.TOPIC_MAP.get(`verified:${userId}`);
     if (verified) return true;
 
+    // verified 读不到：可能是真未验证，也可能是验证后的缓存延迟。
+    // user_challenge 在验证完成时被删除，删除会立即清除所有边缘缓存，此读数可靠：
+    const challengeId = await env.TOPIC_MAP.get(`user_challenge:${userId}`);
+    if (challengeId) return false; // 确有进行中的验证 → 真未验证
+
+    // 无进行中的验证但 verified 读不到 → 查验证事件键（验证前流程不读它，无缓存污染）
     const justVerified = await env.TOPIC_MAP.get(`just_verified:${userId}`);
     if (justVerified) {
-        // 自愈：补写正式验证状态；保留宽限标记并续期（KV 边缘缓存最长 60s 才失效，期间持续兜底）
         await env.TOPIC_MAP.put(`verified:${userId}`, "1", { expirationTtl: CONFIG.VERIFIED_EXPIRE_SECONDS });
         await env.TOPIC_MAP.put(`just_verified:${userId}`, "1", { expirationTtl: CONFIG.JUST_VERIFIED_TTL_SECONDS });
         return true;
@@ -922,12 +931,6 @@ html.tg-dark p{color:#9aa0a6}
 const VERIFY_TG_INIT = `(function(){var w=window.Telegram&&window.Telegram.WebApp;if(w){w.ready();w.expand();if(w.colorScheme==='dark'){document.documentElement.classList.add('tg-dark');}}})();`;
 
 async function sendVerificationChallenge(userId, env, pendingMsgId, origin, fromUser) {
-    // 刚通过验证（KV 边缘缓存延迟兜底），避免对已验证用户重复下发挑战
-    if (await env.TOPIC_MAP.get(`just_verified:${userId}`)) {
-        await env.TOPIC_MAP.put(`verified:${userId}`, "1", { expirationTtl: CONFIG.VERIFIED_EXPIRE_SECONDS });
-        return;
-    }
-
     // 检查是否已有进行中的验证
     const existingChallenge = await env.TOPIC_MAP.get(`user_challenge:${userId}`);
     if (existingChallenge) {
